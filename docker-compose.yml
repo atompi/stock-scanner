@@ -3,12 +3,31 @@ name: stock-scanner
 
 services:
   stock-scanner:
+    image: atompi/stock-scanner:latest
     restart: unless-stopped
-    build: .
     ports:
-      - "8080:8080"
+      - 8888:8080
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - data:/app/data
+      - logs:/app/logs
+
+volumes:
+  data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: $PWD/data
+  logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: $PWD/logs
+
+networks:
+  default:
+    external: true
+    name: compose

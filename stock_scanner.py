@@ -418,6 +418,8 @@ class TopStockScanner:
                 batch = all_stocks[i:batch_stocks]
                 batch_results = self.process_batch(batch)
                 results.extend(batch_results)
+                if i + batch_size < total_stocks:
+                    time.sleep(random.uniform(3, 5))
             print("扫描结束！")
 
             if results:
