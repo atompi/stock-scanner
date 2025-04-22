@@ -3,20 +3,21 @@ Stock Analysis System
 优化后的全盘股票技术分析系统——用于A股市场股票的全面分析，已加速分析并增加额外指标。
 """
 
-import os
-import time
-import random
 import logging
-import traceback
-from datetime import datetime, timedelta
+import os
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
+import akshare as ak
 import numpy as np
 import pandas as pd
-import akshare as ak
+from dotenv import load_dotenv
 from tqdm import tqdm
+
 
 # -------------------------------
 # **技术指标配置**
@@ -24,6 +25,7 @@ from tqdm import tqdm
 @dataclass
 class TechnicalParams:
     """技术指标参数配置"""
+
     ma_periods: Dict[str, int]
     rsi_period: int
     bollinger_period: int
@@ -40,8 +42,9 @@ class TechnicalParams:
             bollinger_period=20,
             bollinger_std=2,
             volume_ma_period=20,
-            atr_period=14
+            atr_period=14,
         )
+
 
 # -------------------------------
 # **股票分析引擎**
@@ -56,21 +59,27 @@ class StockAnalyzer:
         Args:
             params: 技术指标配置参数
         """
+
+        load_dotenv()
+
+        self.log_filename = os.getenv('SCANNER_LOG_FILENAME', './logs/stock_scanner.log')
+        self.log_level = os.getenv('SCANNER_LOG_LEVEL', 'INFO')
+
         self._setup_logging()
         self.params = params or TechnicalParams.default()
 
     def _setup_logging(self) -> None:
         """配置日志记录"""
+        os.makedirs(os.path.dirname(self.log_filename), exist_ok=True)
         logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            filename=self.log_filename,
+            level=self.log_level,
+            format='[%(asctime)s] %(levelname)s %(pathname)s:%(lineno)d %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
         )
         self.logger = logging.getLogger(__name__)
 
-    def get_stock_data(self, stock_code: str,
-                       start_date: Optional[str] = None,
-                       end_date: Optional[str] = None) -> pd.DataFrame:
+    def get_stock_data(self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
         """
         获取单只股票历史数据，默认使用前一年的数据。
 
@@ -90,24 +99,21 @@ class StockAnalyzer:
 
             code = stock_code[2:] if stock_code.startswith(('sz', 'sh')) else stock_code
 
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                start_date=start_date,
-                end_date=end_date,
-                adjust="qfq"
-            )
+            df = ak.stock_zh_a_hist(symbol=code, start_date=start_date, end_date=end_date, adjust="qfq")
 
             self.logger.info(f"获取到 {len(df)} 行数据，列名：{df.columns.tolist()}")
 
-            df = df.rename(columns={
-                "日期": "date",
-                "开盘": "open",
-                "收盘": "close",
-                "最高": "high",
-                "最低": "low",
-                "成交量": "volume",
-                "trade_date": "date"
-            })
+            df = df.rename(
+                columns={
+                    "日期": "date",
+                    "开盘": "open",
+                    "收盘": "close",
+                    "最高": "high",
+                    "最低": "low",
+                    "成交量": "volume",
+                    "trade_date": "date",
+                }
+            )
 
             required_columns = {'date', 'open', 'close', 'high', 'low', 'volume'}
             missing_columns = required_columns - set(df.columns)
@@ -169,11 +175,7 @@ class StockAnalyzer:
         high = df['high']
         low = df['low']
         prev_close = df['close'].shift(1)
-        tr = pd.concat([
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs()
-        ], axis=1).max(axis=1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
         return tr.rolling(window=period, min_periods=period).mean()
 
     @staticmethod
@@ -205,9 +207,11 @@ class StockAnalyzer:
             df['RSI'] = self.calculate_rsi(df['close'], self.params.rsi_period)
             df['MACD'], df['Signal'], df['MACD_hist'] = self.calculate_macd(df['close'])
             df['BB_upper'], df['BB_middle'], df['BB_lower'] = self.calculate_bollinger_bands(
-                df['close'], self.params.bollinger_period, self.params.bollinger_std)
-            df['Volume_MA'] = df['volume'].rolling(window=self.params.volume_ma_period,
-                                                   min_periods=self.params.volume_ma_period).mean()
+                df['close'], self.params.bollinger_period, self.params.bollinger_std
+            )
+            df['Volume_MA'] = (
+                df['volume'].rolling(window=self.params.volume_ma_period, min_periods=self.params.volume_ma_period).mean()
+            )
             df['Volume_Ratio'] = df['volume'] / (df['Volume_MA'] + 1e-10)
             df['ATR'] = self.calculate_atr(df, self.params.atr_period)
             df['Volatility'] = df['ATR'] / df['close'] * 100
@@ -311,12 +315,13 @@ class StockAnalyzer:
                 'rsi': latest['RSI'],
                 'macd_signal': 'BUY' if latest['MACD'] > latest['Signal'] else 'SELL',
                 'volume_status': 'HIGH' if latest['Volume_Ratio'] > 1.5 else 'NORMAL',
-                'recommendation': self.get_recommendation(score)
+                'recommendation': self.get_recommendation(score),
             }
 
         except Exception as e:
             self.logger.error(f"分析股票 {stock_code} 失败：{str(e)}")
             raise
+
 
 # -------------------------------
 # **全盘股票扫描器**
@@ -324,12 +329,12 @@ class StockAnalyzer:
 class TopStockScanner:
     """全盘筛选高打分股票的扫描器"""
 
-    def __init__(self, max_workers: int = 20, min_score: float = 85):
+    def __init__(self, max_workers: int = 5, min_score: float = 85):
         """
         初始化扫描器
 
         Args:
-            max_workers: 并发线程数量（已增至20以加速分析）
+            max_workers: 并发线程数量
             min_score: 高分最低阈值
         """
         self.analyzer = StockAnalyzer()
@@ -358,7 +363,7 @@ class TopStockScanner:
             sz_codes = get_codes(sz_df)
             all_codes = sorted(sh_codes | sz_codes)
             self.logger.info(f"完整股票列表获取到 {len(all_codes)} 支股票信息")
-            print(f"\n开始分析 {len(all_codes)} 支股票...")
+            print(f"开始分析 {len(all_codes)} 支股票")
             return all_codes
 
         except Exception as e:
@@ -397,74 +402,49 @@ class TopStockScanner:
                     self.logger.error(f"处理股票 {stock} 时出错：{str(e)}")
         return results
 
-    def save_intermediate_results(self, results: List[Dict]) -> None:
-        """周期性保存中间结果，便于后续查看进度"""
-        try:
-            df = pd.DataFrame(results)
-            high_score_stocks = df[df['score'] >= self.min_score].sort_values('score', ascending=False)
-            output_lines = [
-                "=" * 80,
-                f"股票扫描中间结果 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                f"共分析 {len(results)} 支股票",
-                "=" * 80,
-                f"\n发现 {len(high_score_stocks)} 支高分股票（得分≥{self.min_score}）："
-            ]
-            for _, row in high_score_stocks.iterrows():
-                output_lines.extend([
-                    f"\n股票代码: {row['stock_code']}",
-                    f"得分: {row['score']:.1f} | 价格: ¥{row['price']:.2f} | 涨跌幅: {row['price_change']:.2f}%"
-                ])
-
-            os.makedirs('scanner', exist_ok=True)
-            with open('scanner/temp_results.txt', 'w', encoding='utf-8') as f:
-                f.write('\n'.join(output_lines))
-
-        except Exception as e:
-            self.logger.error(f"保存中间结果失败：{str(e)}")
-
-    def get_high_score_stocks(self, batch_size: int = 20) -> List[Dict]:
+    def get_high_score_stocks(self, batch_size: int = 5) -> List[Dict]:
         """扫描全盘股票，返回高打分结果列表"""
         try:
             all_stocks = self.get_all_stocks()
             total_stocks = len(all_stocks)
-            print(f"\n开始扫描 {total_stocks} 支股票……")
+            print(f"开始扫描 {total_stocks} 支股票")
             results = []
             total_batches = (total_stocks + batch_size - 1) // batch_size
 
             for i in range(0, total_stocks, batch_size):
                 batch_number = i // batch_size + 1
-                print(f"\r当前进度: 批次 {batch_number}/{total_batches}", end="")
-                batch = all_stocks[i:i + batch_size]
+                print(f"当前进度: 批次 {batch_number}/{total_batches}")
+                batch_stocks = i + batch_size
+                batch = all_stocks[i:batch_stocks]
                 batch_results = self.process_batch(batch)
                 results.extend(batch_results)
-                if i + batch_size < total_stocks:
-                    time.sleep(random.uniform(3, 5))
-                if results and ((len(results) % 100 == 0) or (i + batch_size >= total_stocks)):
-                    self.save_intermediate_results(results)
-            print("\n扫描结束！")
+            print("扫描结束！")
 
             if results:
                 df_results = pd.DataFrame(results)
                 high_score_stocks = df_results[df_results['score'] >= self.min_score].sort_values('score', ascending=False)
                 formatted_results = []
                 for _, row in high_score_stocks.iterrows():
-                    formatted_results.append({
-                        '股票代码': row['stock_code'],
-                        '评分': f"{row['score']:.1f}",
-                        '当前价格': f"¥{row['price']:.2f}",
-                        '涨跌幅': f"{row['price_change']:.2f}%",
-                        'RSI指标': f"{row['rsi']:.2f}",
-                        '均线趋势': '上升' if row['ma_trend'] == 'UP' else '下降',
-                        'MACD信号': '买入' if row['macd_signal'] == 'BUY' else '卖出',
-                        '成交量状态': '放量' if row['volume_status'] == 'HIGH' else '正常',
-                        '投资建议': row['recommendation']
-                    })
+                    formatted_results.append(
+                        {
+                            '股票代码': row['stock_code'],
+                            '评分': f"{row['score']:.1f}",
+                            '当前价格': f"¥{row['price']:.2f}",
+                            '涨跌幅': f"{row['price_change']:.2f}%",
+                            'RSI指标': f"{row['rsi']:.2f}",
+                            '均线趋势': '上升' if row['ma_trend'] == 'UP' else '下降',
+                            'MACD信号': '买入' if row['macd_signal'] == 'BUY' else '卖出',
+                            '成交量状态': '放量' if row['volume_status'] == 'HIGH' else '正常',
+                            '投资建议': row['recommendation'],
+                        }
+                    )
                 return formatted_results
             return []
 
         except Exception as e:
             self.logger.error(f"全盘扫描失败：{str(e)}")
             raise
+
 
 # -------------------------------
 # **结果分组与报告生成**
@@ -474,129 +454,91 @@ def format_price_category(price: float) -> str:
     base = (price // 10) * 10
     return f"{int(base)}-{int(base+10)}"
 
-def save_results_by_price(results: List[Dict]) -> None:
-    """按价格区间保存分析结果至文件"""
+
+def scan_summary(results: List[Dict]) -> None:
+    """生成综合汇总报告"""
     try:
-        os.makedirs('scanner', exist_ok=True)
         price_groups = {}
         for stock in results:
             price = float(stock['当前价格'].replace('¥', ''))
             category = format_price_category(price)
             price_groups.setdefault(category, []).append(stock)
 
-        for category, stocks in price_groups.items():
-            output_lines = [
-                "=" * 80,
-                f"股票分析结果 - 价格区间: {category}元",
-                f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                "=" * 80,
-                f"\n该区间共发现 {len(stocks)} 支高分股票（得分≥85）：",
-                "-" * 80
-            ]
-            stocks.sort(key=lambda x: float(x['评分']), reverse=True)
-            for i, stock in enumerate(stocks, 1):
-                output_lines.extend([
-                    f"\n{i}. 股票代码: {stock['股票代码']}",
-                    f"   评分: {stock['评分']} | 价格: {stock['当前价格']} | 涨跌幅: {stock['涨跌幅']}",
-                    f"   RSI指标: {stock['RSI指标']} | 均线趋势: {stock['均线趋势']} | MACD信号: {stock['MACD信号']}",
-                    f"   成交量状态: {stock['成交量状态']}",
-                    f"   投资建议: {stock['投资建议']}",
-                    "-" * 80
-                ])
-            output_lines.extend([
-                f"\n价格区间 {category}元 分析汇总：",
-                f"1. 股票数量: {len(stocks)}",
-                f"2. 平均评分: {np.mean([float(stock['评分']) for stock in stocks]):.1f}",
-                f"3. 买入信号股票数: {sum(1 for stock in stocks if stock['MACD信号'] == '买入')}",
-                f"4. 放量股票数: {sum(1 for stock in stocks if stock['成交量状态'] == '放量')}"
-            ])
-
-            filename = f'scanner/price_{category.replace("-", "_")}.txt'
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(output_lines))
-        create_summary_file(price_groups)
-    except Exception as e:
-        logging.error(f"保存结果时发生错误: {str(e)}")
-        raise
-
-def create_summary_file(price_groups: Dict[str, List[Dict]]) -> None:
-    """生成综合汇总报告"""
-    try:
         output_lines = [
             "=" * 80,
             "A股市场优质股票筛选报告",
             f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "=" * 80
+            "=" * 80,
         ]
         total_stocks = sum(len(stocks) for stocks in price_groups.values())
         all_scores = [float(stock['评分']) for stocks in price_groups.values() for stock in stocks]
 
-        output_lines.extend([
-            "\n整体统计：",
-            f"1. 共筛选出 {total_stocks} 支高分股票（得分≥85）",
-            f"2. 平均评分: {np.mean(all_scores):.1f}",
-            f"3. 最高评分: {max(all_scores):.1f}",
-            "\n各价格区间分布：",
-            "-" * 80
-        ])
+        output_lines.extend(
+            [
+                "整体统计：",
+                f"1. 共筛选出 {total_stocks} 支高分股票（得分≥85）",
+                f"2. 平均评分: {np.mean(all_scores):.1f}",
+                f"3. 最高评分: {max(all_scores):.1f}",
+                "各价格区间分布：",
+                "-" * 80,
+            ]
+        )
         for category, stocks in sorted(price_groups.items(), key=lambda x: float(x[0].split('-')[0])):
-            output_lines.extend([
-                f"\n价格区间 {category}元：",
-                f"  - 股票数量: {len(stocks)}",
-                f"  - 平均评分: {np.mean([float(stock['评分']) for stock in stocks]):.1f}"
-            ])
+            output_lines.extend(
+                [
+                    f"价格区间 {category}元：",
+                    f"  - 股票数量: {len(stocks)}",
+                    f"  - 平均评分: {np.mean([float(stock['评分']) for stock in stocks]):.1f}",
+                ]
+            )
 
-        with open('scanner/summary.txt', 'w', encoding='utf-8') as f:
-            f.write('\n'.join(output_lines))
+        print('\n'.join(output_lines))
     except Exception as e:
-        logging.error(f"生成汇总报告失败：{str(e)}")
+        print(f"生成汇总报告失败：{str(e)}")
         raise
+
 
 # -------------------------------
 # **主程序入口**
 # -------------------------------
 def main():
+    load_dotenv()
+
     """程序主入口"""
-    print("\n" + "=" * 80)
+    print("=" * 80)
     print("Market-Wide High-Score Stock Scanner".center(76))
     print("=" * 80)
 
-    scanner = TopStockScanner(max_workers=20)  # 已提升至20线程
+    workers = int(os.getenv('MAX_WORKERS', 5))
+
+    scanner = TopStockScanner(max_workers=workers)
     try:
-        print("\n开始全盘扫描股票……")
-        high_score_stocks = scanner.get_high_score_stocks(batch_size=20)
+        print("开始全盘扫描股票")
+        high_score_stocks = scanner.get_high_score_stocks(batch_size=workers)
         if not high_score_stocks:
-            print("\n未找到得分大于等于85分的股票。")
+            print("未找到得分大于等于85分的股票。")
             return
 
-        save_results_by_price(high_score_stocks)
+        output_path = os.getenv('OUTPUT_PATH', './data/high_score_stocks.xlsx')
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        df = pd.DataFrame(high_score_stocks)
+        df.to_excel(output_path, index=False, engine='openpyxl')
+        print(f"结果已保存至：{output_path}")
 
-        print(f"\n分析完成！结果已保存至 scanner 文件夹中：")
-        print("1. 按价格区间保存的详细分析文件（price_XX_YY.txt）")
-        print("2. 汇总报告（summary.txt）")
+        print("分析完成！汇总报告：")
 
-        temp_file = 'scanner/temp_results.txt'
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        scan_summary(high_score_stocks)
 
-        print("\n" + "=" * 80)
-        input("\n按Enter键退出……")
-
-    except Exception as e:
-        error_msg = f"\n程序错误：{str(e)}\n"
         print("=" * 80)
-        print(error_msg)
+        print(f"运行日志已保存至 {os.getenv('SCANNER_LOG_FILENAME', './logs/stock_scanner.log')}")
+        input("按Enter键退出")
+
+    except Exception:
         print("=" * 80)
-        os.makedirs('scanner', exist_ok=True)
-        with open('scanner/error_log.txt', 'w', encoding='utf-8') as f:
-            f.write("Stock Analysis System Error Report\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Error: {str(e)}\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"详细堆栈信息:\n{traceback.format_exc()}")
-        print("错误日志已保存至 scanner/error_log.txt")
-        input("\n按Enter键退出……")
+        print("程序发生错误，请检查日志")
+        print(f"运行日志已保存至 {os.getenv('SCANNER_LOG_FILENAME', './logs/stock_scanner.log')}")
+        input("按Enter键退出")
+
 
 if __name__ == "__main__":
     main()

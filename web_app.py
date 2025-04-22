@@ -1,13 +1,15 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
+
 from stock_analyzer import StockAnalyzer
-import os
 
 app = Flask(__name__)
 analyzer = StockAnalyzer()
 
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
@@ -22,6 +24,7 @@ def analyze():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/api/batch-analyze', methods=['POST'])
 def batch_analyze():
     try:
@@ -35,5 +38,6 @@ def batch_analyze():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8443)
+    app.run(host='0.0.0.0', port=8080)

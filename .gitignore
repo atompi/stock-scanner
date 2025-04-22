@@ -1,1 +1,4 @@
-/scanner/
+/data/
+/logs/
+/__pycache__/
+.env

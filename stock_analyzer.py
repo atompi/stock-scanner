@@ -9,17 +9,19 @@ from dotenv import load_dotenv
 
 class StockAnalyzer:
     def __init__(self, initial_cash=1000000):
-        # 设置日志
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)
-
         # 加载环境变量
         load_dotenv()
 
-        # 设置 Gemini API
+        # 设置日志
+        self.log_filename = os.getenv('ANALYZER_LOG_FILENAME', './logs/stock_analyzer.log')
+        self.log_level = os.getenv('ANALYZER_LOG_LEVEL', 'INFO')
+        self._setup_logging()
+
+        # 设置 LLM API
         self.llm_api_url = os.getenv('LLM_API_URL')
         self.llm_api_key = os.getenv('LLM_API_KEY')
         self.llm_model = os.getenv('LLM_MODEL')
+        self.llm_timeout = int(os.getenv('LLM_TIMEOUT', '600'))
 
         # 配置参数
         self.params = {
@@ -30,6 +32,17 @@ class StockAnalyzer:
             'volume_ma_period': 20,
             'atr_period': 14,
         }
+
+    def _setup_logging(self) -> None:
+        """配置日志记录"""
+        os.makedirs(os.path.dirname(self.log_filename), exist_ok=True)
+        logging.basicConfig(
+            filename=self.log_filename,
+            level=self.log_level,
+            format='[%(asctime)s] %(levelname)s %(pathname)s:%(lineno)d %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+        )
+        self.logger = logging.getLogger(__name__)
 
     def get_stock_data(self, stock_code, start_date=None, end_date=None):
         """获取股票数据"""
@@ -178,7 +191,7 @@ class StockAnalyzer:
             raise
 
     def get_ai_analysis(self, df, stock_code):
-        """使用 Gemini 进行 AI 分析"""
+        """使用 LLM 进行 AI 分析"""
         try:
             recent_data = df.tail(14).to_dict('records')
 
@@ -213,7 +226,9 @@ class StockAnalyzer:
 
             data = {"model": f"{self.llm_model}", "messages": [{"role": "user", "content": prompt}]}
 
-            response = requests.post(f"{self.llm_api_url}/v1/chat/completions", headers=headers, json=data, timeout=10)
+            response = requests.post(
+                f"{self.llm_api_url}/v1/chat/completions", headers=headers, json=data, timeout=self.llm_timeout
+            )
 
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content']
